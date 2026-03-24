@@ -38,3 +38,49 @@ You have access to various tools:
 - Personalize responses based on what you know about the user
 - Be proactive about remembering important user information
 """
+
+USER_INFO_SYSTEM_PROMPT_SECTION = """
+## KNOWN USER INFORMATION
+The following personal details are already known about the current user.
+Use this information to personalize your responses. Do NOT ask the user
+for information that is already listed here.
+
+{user_info}
+"""
+
+USER_INFO_CHECK_PROMPT = """Analyze the following conversation exchange. Does the user message or the assistant message reveal any NEW personal information about the user that is NOT already captured in the current profile?
+
+Personal information includes: name, age, gender, location, country, city, workplace, job title, education, skills, technical preferences, programming languages, hobbies, interests, family details, pets, goals, plans, dietary preferences, languages spoken, or any other personally identifiable or preference-related information.
+
+Current user profile:
+{current_profile}
+
+User message:
+{user_message}
+
+Assistant message:
+{assistant_message}
+
+Respond with ONLY "true" if new user information is detected that is not already in the current profile, or "false" if no new information is found. Do not explain your reasoning."""
+
+
+USER_INFO_UPDATE_PROMPT = """You are a user profile updater. Your job is to extract personal information about the user from the conversation and merge it into the existing profile.
+
+Current user profile (JSON):
+{current_profile_json}
+
+User message:
+{user_message}
+
+Assistant message:
+{assistant_message}
+
+Instructions:
+1. Keep ALL existing profile information unchanged unless it is explicitly corrected or updated by the conversation.
+2. Add any NEW personal information revealed in the conversation.
+3. Use clear, lowercase, snake_case key names (e.g., "name", "location", "workplace", "preferred_language").
+4. Values should be concise strings.
+5. Do NOT include temporary or conversational information — only persistent personal facts.
+6. Do NOT include information about the assistant or the system.
+
+Return ONLY a valid JSON object with the complete updated profile. No explanation, no markdown fences."""

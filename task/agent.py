@@ -6,7 +6,10 @@ from aidial_client import AsyncDial
 from aidial_client.types.chat.legacy.chat_completion import CustomContent, ToolCall
 from aidial_sdk.chat_completion import Message, Role, Choice, Request, Response
 
+from task.prompts import USER_INFO_SYSTEM_PROMPT_SECTION
 from task.tools.base import BaseTool
+from task.tools.memory._models import UserProfile
+from task.tools.memory.user_info_extractor import UserInfoExtractor
 from task.tools.models import ToolCallParams
 from task.utils.constants import TOOL_CALL_HISTORY_KEY
 from task.utils.history import unpack_messages
@@ -20,10 +23,14 @@ class GeneralPurposeAgent:
             endpoint: str,
             system_prompt: str,
             tools: list[BaseTool],
+            user_info_extractor: UserInfoExtractor | None = None,
+            user_profile: UserProfile | None = None,
     ):
         self.endpoint = endpoint
         self.system_prompt = system_prompt
         self.tools = tools
+        self.user_info_extractor = user_info_extractor
+        self.user_profile = user_profile
         self._tools_dict: dict[str, BaseTool] = {
             tool.name: tool
             for tool in tools
@@ -31,6 +38,7 @@ class GeneralPurposeAgent:
         self.state = {
             TOOL_CALL_HISTORY_KEY: []
         }
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def handle_request(
             self, deployment_name: str, choice: Choice, request: Request, response: Response) -> Message:
@@ -100,7 +108,37 @@ class GeneralPurposeAgent:
 
         choice.set_state(self.state)
 
+        if self.user_info_extractor and self.user_profile:
+            latest_user_message = self._get_latest_user_message(request.messages)
+            if latest_user_message:
+                task = asyncio.create_task(
+                    self._extract_user_info_safe(
+                        api_key=api_key,
+                        user_message=latest_user_message,
+                        assistant_message=content,
+                    )
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+
         return assistant_message
+
+    def _build_system_prompt(self) -> str:
+        """
+        Build the full system prompt including known user information.
+        """
+        prompt = self.system_prompt
+
+        if self.user_profile and self.user_profile.info:
+            lines = []
+            for key, value in self.user_profile.info.items():
+                readable_key = key.replace("_", " ").title()
+                lines.append(f"- {readable_key}: {value}")
+            user_info_text = "\n".join(lines)
+            if user_info_text:
+                prompt += USER_INFO_SYSTEM_PROMPT_SECTION.format(user_info=user_info_text)
+
+        return prompt
 
     def _prepare_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         unpacked_messages = unpack_messages(messages, self.state[TOOL_CALL_HISTORY_KEY])
@@ -108,7 +146,7 @@ class GeneralPurposeAgent:
             0,
             {
                 "role": Role.SYSTEM.value,
-                "content": self.system_prompt,
+                "content": self._build_system_prompt(),
             }
         )
 
@@ -119,6 +157,34 @@ class GeneralPurposeAgent:
         print(f"{'-' * 100}\n")
 
         return unpacked_messages
+
+    @staticmethod
+    def _get_latest_user_message(messages: list[Message]) -> str | None:
+        """Extract the content of the latest user message from the conversation."""
+        for message in reversed(messages):
+            if message.role == Role.USER:
+                return message.content or ""
+        return None
+
+    async def _extract_user_info_safe(
+            self,
+            api_key: str,
+            user_message: str,
+            assistant_message: str,
+    ) -> None:
+        """
+        Safely run user info extraction, catching any exceptions
+        to avoid disrupting the main response flow.
+        """
+        try:
+            await self.user_info_extractor.process_after_response(
+                api_key=api_key,
+                user_message=user_message,
+                assistant_message=assistant_message,
+                current_profile=self.user_profile,
+            )
+        except Exception as e:
+            print(f"[UserInfoExtractor] Background extraction failed: {e}")
 
     async def _process_tool_call(self, tool_call: ToolCall, choice: Choice, api_key: str, conversation_id: str) -> dict[
         str, Any]:

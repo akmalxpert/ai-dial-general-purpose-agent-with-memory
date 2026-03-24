@@ -14,6 +14,8 @@ from task.tools.memory.memory_delete_tool import DeleteMemoryTool
 from task.tools.memory.memory_search_tool import SearchMemoryTool
 from task.tools.memory.memory_store import LongTermMemoryStore
 from task.tools.memory.memory_store_tool import StoreMemoryTool
+from task.tools.memory.user_info_extractor import UserInfoExtractor
+from task.tools.memory.user_profile_store import UserProfileStore
 from task.tools.py_interpreter.python_code_interpreter_tool import PythonCodeInterpreterTool
 from task.tools.rag.document_cache import DocumentCache
 from task.tools.rag.rag_tool import RagTool
@@ -22,12 +24,19 @@ DIAL_ENDPOINT = os.getenv('DIAL_ENDPOINT', "http://localhost:8080")
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'gpt-4o')
 # DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'claude-sonnet-3-7')
 
+MINI_DEPLOYMENT_NAME = os.getenv('MINI_DEPLOYMENT_NAME', 'gpt-4.1-nano')
 
 class GeneralPurposeAgentApplication(ChatCompletion):
 
     def __init__(self):
         self.tools: list[BaseTool] = []
         self.memory_store = LongTermMemoryStore(endpoint=DIAL_ENDPOINT)
+        self.user_profile_store = UserProfileStore(endpoint=DIAL_ENDPOINT)
+        self.user_info_extractor = UserInfoExtractor(
+            endpoint=DIAL_ENDPOINT,
+            mini_deployment_name=MINI_DEPLOYMENT_NAME,
+            user_profile_store=self.user_profile_store,
+        )
 
     async def _get_mcp_tools(self, url: str) -> list[BaseTool]:
         try:
@@ -74,11 +83,15 @@ class GeneralPurposeAgentApplication(ChatCompletion):
         if not self.tools:
             self.tools = await self._create_tools()
 
+        user_profile = await self.user_profile_store.load_profile(request.api_key)
+
         with response.create_single_choice() as choice:
             await GeneralPurposeAgent(
                 endpoint=DIAL_ENDPOINT,
                 system_prompt=SYSTEM_PROMPT,
-                tools=self.tools
+                tools=self.tools,
+                user_info_extractor=self.user_info_extractor,
+                user_profile=user_profile,
             ).handle_request(
                 choice=choice,
                 deployment_name=DEPLOYMENT_NAME,
